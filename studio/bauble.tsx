@@ -93,8 +93,13 @@ function choices<T extends number | string>(
   </fieldset>;
 }
 
-const EditorToolbar: Component<{state: EvaluationState}> = (props) => {
+interface EditorToolbarProps {
+  state: EvaluationState;
+  onExport: () => void;
+}
+const EditorToolbar: Component<EditorToolbarProps> = (props) => {
   return <div class="toolbar">
+    <button title="Export" onClick={props.onExport}><Icon name="box-arrow-up" /></button>
     <div class="spacer"></div>
     <Switch>
       <Match when={props.state === EvaluationState.Unknown}>
@@ -140,6 +145,7 @@ interface RenderToolbarProps {
   rotation: Signal.T<{x: number, y: number}>,
   origin: Signal.T<{x: number, y: number, z: number}>,
   zoom: Signal.T<number>,
+  canvasSize: Signal.T<{width: number, height: number}>,
 }
 
 const RenderToolbar: Component<RenderToolbarProps> = (props) => {
@@ -147,12 +153,20 @@ const RenderToolbar: Component<RenderToolbarProps> = (props) => {
     Signal.update(props.quadView, (x) => !x);
   };
 
+  function hires() {
+    const scale = 4;
+    Signal.set(props.canvasSize, {width: 1920 * scale, height: 1080 * scale});
+  }
+
   return <div class="toolbar">
     <button title="Reset camera" onClick={() => resetCamera(props.rotation, props.origin, props.zoom)}>
       <Icon name="box" />
     </button>
     <button title="Toggle quad view" onClick={toggleQuadView}>
       <Icon name={Signal.get(props.quadView) ? "grid-fill" : "grid"} />
+    </button>
+    <button title="Hires" onClick={hires}>
+      <Icon name="emoji-smile" />
     </button>
     <div class="spacer"></div>
     {choices(props.renderType, [
@@ -262,7 +276,8 @@ const Bauble = (props: BaubleProps) => {
   let gestureEndedAt = 0;
 
   const canvasSize = Signal.create(props.size);
-  const pixelRatio = Signal.create(window.devicePixelRatio);
+  // const pixelRatio = Signal.create(window.devicePixelRatio);
+  const pixelRatio = Signal.create(0.5);
   const imageRendering: Signal.T<Property.ImageRendering> = Signal.create('auto' as Property.ImageRendering);
   const canvasResolution = createMemo(() => {
     const dpr = Signal.get(pixelRatio);
@@ -279,8 +294,9 @@ const Bauble = (props: BaubleProps) => {
   const evaluationState = Signal.create(EvaluationState.Unknown);
   const isAnimation = Signal.create(false);
   const isVisible = Signal.create(false);
-
+  const antialiasingSamples = Signal.create(1);
   const timer = new Timer();
+  let renderer: Renderer;
 
   const intersectionObserver = new IntersectionObserver((entries) => {
     for (const entry of entries) {
@@ -297,8 +313,8 @@ const Bauble = (props: BaubleProps) => {
       onChange: () => Signal.set(scriptDirty, true),
       definitions: runtime.getDefinitions(),
     });
-    // TODO: these should really be named
-    const renderer = new Renderer(
+    // TODO: these arguments should really be named
+    renderer = new Renderer(
       canvas,
       timer.t,
       renderType,
@@ -308,6 +324,7 @@ const Bauble = (props: BaubleProps) => {
       quadView,
       quadSplitPoint,
       canvasResolution,
+      antialiasingSamples,
     );
 
     const renderLoop = new RenderLoop((elapsed) => batch(() => {
@@ -426,6 +443,9 @@ const Bauble = (props: BaubleProps) => {
 
   const onPointerDown = (e: PointerEvent) => {
     if (interactionPointer != null) {
+      return;
+    }
+    if (e.ctrlKey || e.shiftKey || e.metaKey) {
       return;
     }
     e.preventDefault();
@@ -591,12 +611,69 @@ const Bauble = (props: BaubleProps) => {
     canvasContainer.style.flexBasis = `${oldSize - delta}px`;
   };
 
+  function exportImage() {
+    const modal = document.createElement('div');
+    modal.classList.add('modal');
+    const shaderSource = renderer.currentFragmentShaderSource;
+    if (shaderSource == null) {
+      throw new Error("no shader to compile");
+    }
+    const resolution = {width: 1920*2, height: 1080*2};
+    // const resolution = {width: 1024, height: 1024};
+    // const resolution = {width: 1920*0.5, height: 1080*0.5};
+    const offscreenCanvas = document.createElement('canvas');
+    offscreenCanvas.width = resolution.width;
+    offscreenCanvas.height = resolution.height;
+    const offscreenRenderer = new Renderer(offscreenCanvas,
+      Signal.create(0 as Seconds),
+      Signal.create(0),
+      Signal.create({x: 0, y: -0.25}),
+      // rotation,
+      Signal.create({x: 0, y: 0, z: 0}),
+      Signal.create(5.5),
+      // zoom,
+      Signal.create(false),
+      Signal.create({x: 0, y: 0}),
+      Signal.getter(Signal.create(resolution)),
+      Signal.create(4));
+    offscreenRenderer.recompileShader(shaderSource);
+
+    const slices = 16;
+    const progress = document.createElement('progress');
+    progress.value = 0;
+    progress.max = slices * slices;
+    modal.appendChild(progress);
+    let i = 0;
+
+    function loop() {
+      offscreenRenderer.drawSegment(i, slices);
+      i++;
+      progress.value = i;
+      if (i === slices * slices) {
+        modal.appendChild(document.createTextNode("Here's the image:"));
+        const img = document.createElement('img');
+        img.src = offscreenCanvas.toDataURL('image/png');
+        modal.appendChild(img);
+      } else {
+        requestAnimationFrame(loop);
+      }
+    }
+    requestAnimationFrame(loop);
+    document.body.appendChild(modal);
+  }
+
   return <div class="bauble" style={{
     '--canvas-width': `${Signal.get(canvasSize).width}px`,
     '--canvas-height': `${Signal.get(canvasSize).height}px`,
   }}>
     <div class="canvas-container" ref={canvasContainer!}>
-      <RenderToolbar renderType={renderType} quadView={quadView} rotation={rotation} origin={origin} zoom={zoom} />
+      <RenderToolbar
+        canvasSize={canvasSize}
+        renderType={renderType}
+        quadView={quadView}
+        rotation={rotation}
+        origin={origin}
+        zoom={zoom} />
       <canvas
         ref={canvas!}
         class="render-target"
@@ -622,7 +699,7 @@ const Bauble = (props: BaubleProps) => {
       onDblClick={onHandleDblClick}
     />
     <div class="code-container" ref={codeContainer!}>
-      <EditorToolbar state={Signal.get(evaluationState)} />
+      <EditorToolbar onExport={exportImage} state={Signal.get(evaluationState)} />
       <div class="editor-container" ref={editorContainer!} />
       <ResizableArea ref={outputContainer!} />
     </div>

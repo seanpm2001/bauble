@@ -35,7 +35,7 @@ document.addEventListener("DOMContentLoaded", (_) => {
               initialScript={initialScript}
               focusable={true}
               canSave={false}
-              size={{width: 256, height: 256}}
+              size={{width: 1920/2, height: 1080/2}}
             />, placeholder);
         }
       });
